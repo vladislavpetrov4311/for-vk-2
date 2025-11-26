@@ -1,0 +1,105 @@
+# Секрет с пользователями и паролями
+apiVersion: v1
+kind: Secret
+metadata:
+  name: clickhouse-users
+type: Opaque
+stringData:
+  user1: "pass1"
+  user2: "pass2"
+---
+# ConfigMap для конфигурации ClickHouse (можно редактировать, чтобы менять настройки)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: clickhouse-config
+data:
+  config.xml:
+    <yandex>
+      <!-- Ваши настройки. При необходимости, могу добавить ваш public key в свой dev стенд, чтобы вы затестили, как оно работает -->
+    </yandex>
+---
+# StatefulSet для запуска ClickHouse
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: clickhouse
+spec:
+  serviceName: "clickhouse"
+  replicas: 1
+  selector:
+    matchLabels:
+      app: clickhouse
+  template:
+    metadata:
+      labels:
+        app: clickhouse
+    spec:
+      initContainers:
+        - name: create-users
+          image: yandex/clickhouse-server:latest
+          env:
+            - name: CLICKHOUSE_VERSION
+              value: "24.8" # У меня достпуно 24.8 - 25.10, при желание можно заменить на более свежую версию КХ
+          command:
+            - /bin/sh
+            - -c
+            - |
+              apk add --no-cache curl bash jq
+              # Ждем, пока ClickHouse запустится
+              until curl -s https://{dns от YC}:{port от YC}/; do sleep 1; done
+              # Создаем пользователей из секрета
+              kubectl get secret clickhouse-users -o json | \
+              jq -r '.data | to_entries[] | "\(.key) \(.value)"' | while read user_b64 pass_b64; do
+                user=$(echo $user_b64 | base64 -d)
+                password=$(echo $pass_b64 | base64 -d)
+                curl -sS "https://{dns от YC}:{port от YC}/?query="CREATE USER '$user' IDENTIFIED WITH plaintext_password BY '$password'""
+              done
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/clickhouse/
+            - name: config
+              mountPath: /etc/clickhouse-server/config.xml
+              subPath: config.xml
+            - name: users
+              mountPath: /etc/clickhouse-server/users.xml
+              subPath: users.xml
+            - name: scripts
+              mountPath: /scripts
+      containers:
+        - name: clickhouse
+          image: yandex/clickhouse-server:${CLICKHOUSE_VERSION:-24.8}
+          env:
+            - name: CLICKHOUSE_VERSION
+              value: "24.8" # Можно обновить вплоть до 25.10
+          ports:
+            - containerPort: 8123
+              name: http
+            - containerPort: 9000
+              name: tcp
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/clickhouse/
+            - name: config
+              mountPath: /etc/clickhouse-server/config.xml
+              subPath: config.xml
+            - name: users
+              mountPath: /etc/clickhouse-server/users.xml
+              subPath: users.xml
+      volumes:
+        - name: config
+          configMap:
+            name: clickhouse-config
+        - name: users
+          configMap:
+            name: clickhouse-config
+        - name: scripts
+          emptyDir: {}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 50Gi
