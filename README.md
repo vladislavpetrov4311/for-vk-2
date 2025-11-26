@@ -1,6 +1,6 @@
 # Задача 2
 ### Инструкция по запуску
-* `git clone`
+* `git clone https://github.com/vladislavpetrov4311/for-vk-2.git`
 * `yc managed-kubernetes cluster get-credentials <имя_кластера> --zone <зона>`
 * `kubectl apply -f conf.yaml`
 
